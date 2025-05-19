@@ -15,9 +15,9 @@
 needsPackage "JSON"
 
 -- serializable types
--- {type, name of type in file, uses Id, uses parameters}
+-- {type, name of type in file, uses Id}
 typeInfo = {
-    {PolynomialRing, "MPolyRing", true, false}
+    {PolynomialRing, "MPolyRing", true}
     }
 
 -- TypeMap = new HashTable {
@@ -42,7 +42,7 @@ typeParams RingElement := (obj) -> (
 
 
 saveTypeParams = method()
-saveTypeParams(MutableHashTable, PolynomialRing) := (state,  obj) -> (
+saveTypeParams(MutableHashTable, Thing) := (state,  obj) -> (
     "MPolyRing"
     );
 
@@ -92,13 +92,16 @@ saveMRDIJSON(String, Thing) := (filename, obj) -> (
     -- write objAsDict to a file
     );
 
+loadMRDIJSON(String) := (filename) -> (
+    fromJSON(filename);
+    );
+
+
 end--
 restart
 needs "MRDIJSON.m2"
 
-R = QQ[x, y]
-p = x^2 + y
-saveMRDIJSON("balh", 2 * p)
+loadMRDIJSON("/homes/combi/vecchia/local/repositories/mardi/file-format-paper/polynomial-example.json")
 
 
 
