@@ -20,10 +20,19 @@ typeInfo = {
     {PolynomialRing, "MPolyRing", true}
     }
 
-reverseTypeMap = new HashTable {
+reverseTypeMap = new HashTable from {
     "MPolyRing" => PolynomialRing,
-    "PolyRing" => PolynomialRing
+    "PolyRing" => PolynomialRing, 
+    "MPolyRingElem" => RingElement,
+    "PolyRingElem" => RingElement,
+    "QQField" => Ring,
+    "ZZRing" => Ring
 }
+
+singletonTypes = new HashTable from {
+    "QQField" => QQ, 
+    "ZZRing" => ZZ
+    }
 
 typeParams = method()
 typeParams PolynomialRing := (obj) -> (
@@ -66,18 +75,18 @@ saveObject(MutableHashTable, RingElement) := (state, obj) -> (
 )
 
 
-saveTypedObject = method()
-saveTypedObject(MutableHashTable, Thing) := (state, obj) -> (
-    state#"objToId"#(class obj) ??= hash class obj;
-    state#"idToObj"#(hash class obj) ??= class obj;
-    
-    h := new HashTable from {
-	"_type" => saveTypeParams(state, obj),
-	"data" => saveObject(state, obj)
-	};
-	
-    )
-
+-- saveTypedObject = method()
+--saveTypedObject(MutableHashTable, Thing) := (state, obj) -> (
+--    state#"objToId"#(class obj) ??= hash class obj;
+--    state#"idToObj"#(hash class obj) ??= class obj;
+--    
+--    h := new HashTable from {
+--	"_type" => saveTypeParams(state, obj),
+--	"data" => saveObject(state, obj)
+--	};
+--	
+--    )
+--
 saveMRDIJSON = method()
 saveMRDIJSON(String, Thing) := (filename, obj) -> (
     -- this should become a global serializer state to save many objects in the
@@ -92,83 +101,180 @@ saveMRDIJSON(String, Thing) := (filename, obj) -> (
     -- write objAsDict to a file
     );
 
-stringIsUUID = s -> (
-    --  A simple check: 36 characters, and some hyphens in specific positions
-    --  This is NOT a fully compliant UUID validation, but it's sufficient
-    --  for the purpose of this translation, given the limitations of
-    --  Macaulay2's built-in string manipulation.  A more robust check
-    --  would require more complex string parsing.
-    (length s == 36) and
-    (s_(9) == "-") and (s_(14) == "-") and (s_(19) == "-") and (s_(24) == "-")
-);
+isUUID = method()
+isUUID String := s -> (
+    -- Simple regex-like check for UUID format
+    if #s != 36 then return false;
+    if s#8 != "-" or s#13 != "-" or s#18 != "-" or s#23 != "-" then return false;
+    
+    validChars := set join(characters("0123456789abcdefABCDEF"), {"-"});
+    all(characters s, c -> member(c, validChars))
+)
+
+loadNode = method()
+loadNode(HashTable, String, Function) := (s, key, fn) -> (
+    	obj := s#"obj";
+    	
+	if (instance(obj, String) and isUUID(obj)) then return loadRef(s);
+	
+    	s#"obj" = s#"obj"#key;
+	result := fn(s);
+	s#"obj" = obj;
+	return result;
+    )
+
+-- Function to load a reference from a deserialized state
+loadRef = method()
+loadRef(HashTable) := s -> (
+    -- Get the ID from the current object
+    id := s#"obj";
+    local loadedRef;
+
+    -- Check if the ID already exists in the local state
+    -- TODO update for global state functionality
+    if member(id, keys s#"idToObj") then (
+        -- If it exists, retrieve the object
+        loadedRef = s#"idToObj"#id
+    ) else (
+        -- Otherwise, load the object from references
+        -- Set object to the reference with this ID
+        s#"obj" = s#"refs"#id;
+        
+        -- Load the object
+        loadedRef = loadTypedObject(s);
+        
+        -- Store the loaded object in the global state
+        s#"idToObj"#id = loadedRef;
+        s#"objToId"#loadedRef = id;
+    );
+    -- Return the loaded reference
+    return loadedRef
+)
+
 
 -- The decode_type function in Macaulay2
-decodeType = s -> (
-    if (type(s#obj) == String) then (
-        if (stringIsUUID(s#obj)) then (
-            id := s#obj;
-            obj := s#obj;
-            if (s#refs == null) then (
-                return type(s#idToObj#id);
+decodeType = method()
+decodeType(HashTable) := s -> (
+    if instance(s#"obj", String) then (
+        if (isUUID(s#"obj")) then (
+            id := s#"obj";
+            obj := s#"obj";
+	    if (s#"refs" === null) then (
+                return class(s#"idToObj"#id);
             );
-            s#obj = s#refs#id;
+            s#"obj" = s#"refs"#id;
             T := decodeType(s);
-            s#obj = obj;
+            s#"obj" = obj;
             return T;
         ) else (
-            key := s#obj;
-            if (key in reverseTypeMap) then (
+            key := s#"obj";
+            if member(key, keys reverseTypeMap) then (
               return reverseTypeMap#key
             ) else (
-              error("unsupported type " | key);
+              error("unsupported type for decoding " | key);
             )
         )
     );
 
-    if ("_type" in keys(s#obj)) then (
-        --- need to work out loadNode 
-        return decodeTypes#obj#"_type") => decodeType(s)
-    );
-
-    if ("name" in keys(s#obj)) then (
-        if ("_instance" in keys(s#obj)) then (
-            nameKey := s#obj#"name";
-            instanceKey := s#obj#"_instance";
-            if (instanceKey in reverseTypeMap#nameKey) then (
-               return reverseTypeMap#nameKey#instanceKey
-            ) else (
-              error("unsupported instance " | instanceKey);
-            )
-        ) else (
-            return decodeType(s#"name");
-        )
+    if member("_type", keys s#"obj") then (
+	return loadNode(s, "_type", decodeType)
+	);
+    
+    if member("name", keys s#"obj") then (
+	return loadNode(s, "name", decodeType);
     )
 );
 
-loadTypedObject = state -> (
-    	T = decodeType(state);
+
+loadTypeParams = method()
+loadTypeParams(MutableHashTable, Type, String) := (s, T, key) -> (
+    return loadNode(s, key, s -> loadTypeParams(s, T))
+    )	 
+loadTypeParams(MutableHashTable, Type) := (s, T) -> (
+    -- If the object is a string
+    if instance(s#"obj", String) then (
+        -- Check if it's a UUID
+        if isUUID(s#"obj") then (
+            return (T, loadRef(s))
+        );
+        return (T, null)
+    );
+
+    -- If object has params key
+    if member("params", keys s#"obj") then (
+	getParams = localState -> (
+	    obj = localState#"obj";
+	    -- Handle array params
+	    if instance(obj, Array) or instance(obj, List) then (
+		print "implement loading array type params";
+		-- params = loadTypeArrayParams(S);
+      	    	) else if instance(obj, String) or member("params", keys obj) then (
+    	    	if isUUID(obj) then (
+		    return (T, loadRef(localState));
+		    );	 
+		if member(obj, keys singletonTypes) then (
+		    params = singletonTypes#obj;
+		    ) else (
+		    U := decodeType(localState);
+		    params = (loadTypeParams(localState, U))#1;
+		    )
+               	) else (
+		params = loadTypedObject(localState);
+            	);
+	    -- Return type and params
+	    return (T, params);
+	    );	  
+	return loadNode(s, "params", getParams);
+	) else (
+	return (T, loadTypedObject(s));
+	);
+    );
+
+loadObject = method()
+loadObject(HashTable, Type, Thing) := (s, T, params) -> (
+    if T === PolynomialRing then (
+	    symbols = s#"obj"#"symbols";
+	    return params[symbols];
+	);
+    if T === RingElement then (
+	p = 0_params;
+	for term in s#"obj" do (
+	    p = p + ((value term_1)_params * params_(apply(term_0, x -> value x)));
+	    );    
+	return p;
+	);
+    )
+
+loadTypedObject = s -> (
+    	T = decodeType(s);
+    	tp = loadTypeParams(s, T, "_type");
+    	T = tp_0;
+	params = tp_1;
+	if member("data", keys s#"obj") then (
+    	    return loadNode(s, "data", s -> loadObject(s, T, params));
+	    ) else (
+	    	return singletonTypes#(s#"obj"#"_type")
+	    );
     );
 
 loadMRDIJSON = filename -> (
     -- this should become a global serializer state to save many objects in the
     -- same session
-    jsonHT = fromJSON openIn filename
+    jsonHT = fromJSON openIn filename;
     state := new MutableHashTable from {
 	"objToId" => new MutableHashTable,
 	"idToObj" => new MutableHashTable,
 	"obj" => jsonHT,
-	"refs" => jsonHT#"_refs"
+	"refs" => if member("_refs", keys jsonHT) then jsonHT#"_refs" else null
 	};
+
     return loadTypedObject(state);
     );
 
 
 
 --end--
---restart
---needs "MRDIJSON.m2"
 
-loadMRDIJSON("/homes/combi/vecchia/local/repositories/mardi/file-format-paper/polynomial-example.json")
 
 
 
