@@ -4,7 +4,7 @@
   },
   "dependencies": {
     "clipboard": "^2.0.11",
-    "copy-files-from-to": "^3.11.0"
+    "copy-files-from-to": "^4.0.0"
   },
   "copyFiles": [
     {
