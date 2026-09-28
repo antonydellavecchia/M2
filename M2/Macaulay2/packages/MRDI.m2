@@ -249,7 +249,8 @@ fromMRDI(String, HashTable) := (ns, r) -> (
     if r#?"_type" then (
 	(name, params) := (
 	    if instance(r#"_type", HashTable)
-	    then (r#"_type"#"name", r#"_type"#"params")
+	    then (r#"_type"#"name",
+		if r#"_type"#?"params" then r#"_type"#"params")
 	    else (r#"_type", null));
 	if not loadMethods#ns#?name then error ("unknown type: ", name);
 	loadMethods#ns#name(
@@ -291,11 +292,11 @@ mrdiToCoefficient = method(Dispatch => Type)
 mrdiToCoefficient ZZ := R -> value
 mrdiToCoefficient QQ := R -> a -> value a#0 / value a#1
 
-mrdiToPolynomial = (R, f) -> (
+termsToPolynomial = (R, f, coeff) -> (
     if #f == 0 then 0_R
-    else sum(f, term -> times(
-	    (mrdiToCoefficient coefficientRing R) term#1,
-	    R_(value \ toList term#0))))
+    else sum(f, term -> times(coeff term#1, R_(value \ toList term#0))))
+mrdiToPolynomial = (R, f) -> (
+    termsToPolynomial(R, f, mrdiToCoefficient coefficientRing R))
 addLoadMethod("RingElement", (params, data) -> (
 	mrdiToPolynomial(params, data)))
 addLoadMethod("Ideal", (params, data) -> (
@@ -337,10 +338,19 @@ addSaveMethod(ZZ,
     Name => "ZZRingElem",
     Namespace => "Oscar")
 
+oscarQQ = x -> concatenate(toString numerator x, "//", toString denominator x)
 addSaveMethod(QQ,
     x -> QQ,
-    x -> concatenate(toString numerator x, "//", toString denominator x),
+    oscarQQ,
     Name => "QQFieldElem",
+    Namespace => "Oscar")
+
+addSaveMethod(QuotientRing,
+    R -> (
+	if isFinitePrimeField R then toString char R
+	else error "not implemented yet"),
+    Name => "FiniteField",
+    UseID => true,
     Namespace => "Oscar")
 
 -- Oscar differentiates between univariate and multivariate polynomial rings,
@@ -352,9 +362,17 @@ addSaveMethod(PolynomialRing,
     UseID => true,
     Namespace => "Oscar")
 
+-- Oscar stores polynomial coefficients as bare data, without a "_type"
+oscarCoefficient = method()
+oscarCoefficient ZZ := toString
+oscarCoefficient QQ := oscarQQ
+oscarCoefficient RingElement := c -> (
+    if isFinitePrimeField ring c then toString(lift(c, ZZ) % char ring c)
+    else error "not implemented yet")
+
 addSaveMethod(RingElement,
     ring,
-    f -> apply(listForm f, mon -> {mon#0, mon#1}),
+    f -> apply(listForm f, (mon, c) -> {mon, oscarCoefficient c}),
     Name => "MPolyRingElem",
     Namespace => "Oscar")
 
@@ -362,11 +380,12 @@ addLoadMethod("Base.Int", (params, data) -> value data, Namespace => "Oscar")
 addLoadMethod("ZZRingElem",
     (params, data) -> value data,
     Namespace => "Oscar")
+oscarToQQ = data -> (
+    x := separate("//", data);
+    if #x == 2 then value x#0 / value x#1
+    else value x#0 / 1)
 addLoadMethod("QQFieldElem",
-    (params, data) -> (
-	x := separate("//", data);
-	if #x == 2 then value x#0 / value x#1
-	else value x#0 / 1),
+    (params, data) -> oscarToQQ data,
     Namespace => "Oscar")
 addLoadMethod("String", (params, data) -> data, Namespace => "Oscar")
 addLoadMethod("Float64", (params, data) -> value data, Namespace => "Oscar")
@@ -382,8 +401,14 @@ addLoadMethod({"PolyRing", "MPolyRing"},
 	-- TODO: handled indexed variables, e.g., x[1], x[2], x[3]
 	params[Variables => data#"symbols"]),
     Namespace => "Oscar")
+oscarToCoefficient = R -> (
+    if R === ZZ then value
+    else if R === QQ then oscarToQQ
+    else if isFinitePrimeField R then s -> (value s)_R
+    else error "not implemented yet")
 addLoadMethod({"PolyRingElem", "MPolyRingElem"},
-    (params, data) -> mrdiToPolynomial(params, data),
+    (params, data) -> termsToPolynomial(params, data,
+	oscarToCoefficient coefficientRing params),
     Namespace => "Oscar")
 
 ----------------
@@ -983,6 +1008,19 @@ checkMRDI(1/2)
 R = ZZ[x,y,z,w]
 checkMRDI R
 checkMRDI random(3, R)
+S = QQ[x,y]
+checkMRDI(x^2*y - 3/2*x + 1)
+checkMRDI(ZZ/101)
+T = ZZ/7[x,y]
+checkMRDI(3*x*y + 5)
+
+-- polynomial saved by Oscar (coefficients are bare data)
+f = loadMRDI "{\"_ns\":{\"Oscar\":[\"https://github.com/oscar-system/Oscar.jl\",\"1.6.0\"]},\"_type\":{\"name\":\"MPolyRingElem\",\"params\":\"71dc74f9-1047-4a5d-96a3-d24b4511dc56\"},\"data\":[[[\"2\",\"1\"],\"1\"],[[\"1\",\"0\"],\"-3//2\"],[[\"0\",\"0\"],\"1\"]],\"_refs\":{\"71dc74f9-1047-4a5d-96a3-d24b4511dc56\":{\"_type\":{\"name\":\"MPolyRing\",\"params\":{\"_type\":\"QQField\"}},\"data\":{\"symbols\":[\"x\",\"y\"]}}}}"
+use ring f
+assert(f == x^2*y - 3/2*x + 1)
+f = loadMRDI "{\"_ns\":{\"Oscar\":[\"https://github.com/oscar-system/Oscar.jl\",\"1.6.0\"]},\"_type\":{\"name\":\"MPolyRingElem\",\"params\":\"68150a13-699f-4807-80e9-419549cd5daf\"},\"data\":[[[\"1\",\"1\"],\"3\"],[[\"0\",\"0\"],\"5\"]],\"_refs\":{\"68150a13-699f-4807-80e9-419549cd5daf\":{\"_type\":{\"name\":\"MPolyRing\",\"params\":\"44b07d45-576d-4712-b30e-e91e512511bb\"},\"data\":{\"symbols\":[\"x\",\"y\"]}},\"44b07d45-576d-4712-b30e-e91e512511bb\":{\"_type\":{\"name\":\"FiniteField\",\"_instance\":\"FqField\"},\"data\":\"7\"}}}"
+use ring f
+assert(char ring f == 7 and f == 3*x*y + 5)
 
 -- objects we can load but can't save yet
 checkLoad = (x, mrdi) -> assert BinaryOperation(symbol ===, x, loadMRDI mrdi)
