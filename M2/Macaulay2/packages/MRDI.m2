@@ -370,10 +370,18 @@ oscarCoefficient RingElement := c -> (
     if isFinitePrimeField ring c then toString(lift(c, ZZ) % char ring c)
     else error "not implemented yet")
 
+oscarTerms = f -> apply(listForm f, (mon, c) -> {mon, oscarCoefficient c})
+
 addSaveMethod(RingElement,
     ring,
-    f -> apply(listForm f, (mon, c) -> {mon, oscarCoefficient c}),
+    oscarTerms,
     Name => "MPolyRingElem",
+    Namespace => "Oscar")
+
+addSaveMethod(Ideal,
+    ring,
+    I -> apply(I_*, oscarTerms),
+    Name => "MPolyIdeal",
     Namespace => "Oscar")
 
 addLoadMethod("Base.Int", (params, data) -> value data, Namespace => "Oscar")
@@ -406,9 +414,13 @@ oscarToCoefficient = R -> (
     else if R === QQ then oscarToQQ
     else if isFinitePrimeField R then s -> (value s)_R
     else error "not implemented yet")
+oscarToPolynomial = (R, f) -> (
+    termsToPolynomial(R, f, oscarToCoefficient coefficientRing R))
 addLoadMethod({"PolyRingElem", "MPolyRingElem"},
-    (params, data) -> termsToPolynomial(params, data,
-	oscarToCoefficient coefficientRing params),
+    (params, data) -> oscarToPolynomial(params, data),
+    Namespace => "Oscar")
+addLoadMethod("MPolyIdeal",
+    (params, data) -> ideal matrix(params, {apply(data, oscarToPolynomial_params)}),
     Namespace => "Oscar")
 
 ----------------
@@ -1013,6 +1025,9 @@ checkMRDI(x^2*y - 3/2*x + 1)
 checkMRDI(ZZ/101)
 T = ZZ/7[x,y]
 checkMRDI(3*x*y + 5)
+checkIdeal = I -> assert(loadMRDI saveMRDI(I, Namespace => "Oscar") == I)
+checkIdeal ideal(x^2 - x*y, 3*y + 1)
+checkIdeal ideal(0_T)
 
 -- polynomial saved by Oscar (coefficients are bare data)
 f = loadMRDI "{\"_ns\":{\"Oscar\":[\"https://github.com/oscar-system/Oscar.jl\",\"1.6.0\"]},\"_type\":{\"name\":\"MPolyRingElem\",\"params\":\"71dc74f9-1047-4a5d-96a3-d24b4511dc56\"},\"data\":[[[\"2\",\"1\"],\"1\"],[[\"1\",\"0\"],\"-3//2\"],[[\"0\",\"0\"],\"1\"]],\"_refs\":{\"71dc74f9-1047-4a5d-96a3-d24b4511dc56\":{\"_type\":{\"name\":\"MPolyRing\",\"params\":{\"_type\":\"QQField\"}},\"data\":{\"symbols\":[\"x\",\"y\"]}}}}"
