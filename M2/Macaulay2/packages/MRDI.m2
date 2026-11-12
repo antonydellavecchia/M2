@@ -84,6 +84,7 @@ addNamespace(String, String, String) := (ns, url, v) -> (
 
 addNamespace("Macaulay2", "https://macaulay2.com", version#"VERSION")
 addNamespace("Oscar", "https://github.com/oscar-system/Oscar.jl", "1.6.0")
+addNamespace("mrdi", "https://www.mardi4nfdi.de/mrdi", "1.0.0")
 
 saveMRDI = method(
     Dispatch => Thing,
@@ -232,7 +233,8 @@ loadMRDI = method()
 -- TODO: schema validation
 loadMRDI String := loadMRDI @@ fromJSON
 loadMRDI HashTable := r -> (
-    ns := first keys r#"_ns";
+    -- files listing several namespaces (e.g., Oscar and mrdi) default to mrdi
+    ns := if r#"_ns"#?"mrdi" then "mrdi" else first keys r#"_ns";
     if not loadMethods#?ns then error("unknown namespace: ", ns);
     -- save info about refs we haven't created yet
     if r#?"_refs" then scanPairs(r#"_refs",
@@ -252,8 +254,12 @@ fromMRDI(String, HashTable) := (ns, r) -> (
 	    then (r#"_type"#"name",
 		if r#"_type"#?"params" then r#"_type"#"params")
 	    else (r#"_type", null));
-	if not loadMethods#ns#?name then error ("unknown type: ", name);
-	loadMethods#ns#name(
+	-- types of other namespaces are tagged, e.g., {"name": ..., "_ns": "Oscar"}
+	tns := if instance(r#"_type", HashTable) and r#"_type"#?"_ns"
+	then r#"_type"#"_ns" else ns;
+	if not loadMethods#?tns then error("unknown namespace: ", tns);
+	if not loadMethods#tns#?name then error ("unknown type: ", name);
+	loadMethods#tns#name(
 	    if params =!= null then fromMRDI(ns, params),
 	    if r#?"data" then fromMRDI(ns, r#"data")))
     -- otherwise, de-serialize its values
@@ -267,6 +273,8 @@ fromMRDI(String, String) := (ns, s) -> (
     -- otherwise, just return the string
     else s)
 fromMRDI(String, List) := (ns, x) -> apply(x, fromMRDI_ns)
+-- numbers, booleans, and null are their own de-serialization
+fromMRDI(String, Thing) := (ns, x) -> x
 
 -- input function takes two args: params (de-serialized) & data
 addLoadMethod = method(Options => {Namespace => "Macaulay2"})
@@ -292,9 +300,12 @@ mrdiToCoefficient = method(Dispatch => Type)
 mrdiToCoefficient ZZ := R -> value
 mrdiToCoefficient QQ := R -> a -> value a#0 / value a#1
 
+-- integer data is either a JSON number or a string
+mrdiToZZ = d -> if instance(d, String) then value d else d
+
 termsToPolynomial = (R, f, coeff) -> (
     if #f == 0 then 0_R
-    else sum(f, term -> times(coeff term#1, R_(value \ toList term#0))))
+    else sum(f, term -> times(coeff term#1, R_(mrdiToZZ \ toList term#0))))
 mrdiToPolynomial = (R, f) -> (
     termsToPolynomial(R, f, mrdiToCoefficient coefficientRing R))
 addLoadMethod("RingElement", (params, data) -> (
@@ -422,6 +433,38 @@ addLoadMethod({"PolyRingElem", "MPolyRingElem"},
 addLoadMethod("MPolyIdeal",
     (params, data) -> ideal matrix(params, {apply(data, oscarToPolynomial_params)}),
     Namespace => "Oscar")
+
+----------
+-- mrdi --
+----------
+
+-- https://www.mardi4nfdi.de/mrdi, version 1.0.0
+-- the types agreed upon between the systems implementing the mrdi format
+
+addLoadMethod("Integers", (params, data) -> ZZ, Namespace => "mrdi")
+addLoadMethod("Rationals", (params, data) -> QQ, Namespace => "mrdi")
+addLoadMethod("Integer", (params, data) -> mrdiToZZ data, Namespace => "mrdi")
+addLoadMethod("Rational", (params, data) -> oscarToQQ data, Namespace => "mrdi")
+addLoadMethod("FiniteField",
+    (params, data) -> (
+	if params =!= null then error "not implemented yet"
+	else ZZ/(mrdiToZZ data)),
+    Namespace => "mrdi")
+addLoadMethod("FiniteFieldElement",
+    (params, data) -> (mrdiToZZ data)_params,
+    Namespace => "mrdi")
+addLoadMethod("PolynomialRing",
+    (params, data) -> params[Variables => data#"symbols"],
+    Namespace => "mrdi")
+mrdiToCoeff = R -> (
+    if R === ZZ then mrdiToZZ
+    else if R === QQ then oscarToQQ
+    else if isFinitePrimeField R then d -> (mrdiToZZ d)_R
+    else error "not implemented yet")
+addLoadMethod("Polynomial",
+    (params, data) -> termsToPolynomial(params, data,
+	mrdiToCoeff coefficientRing params),
+    Namespace => "mrdi")
 
 ----------------
 -- validating --
@@ -1140,4 +1183,16 @@ assert(try (saveMRDI Q2; false) else true);
 -- somehow reaches the Ring save method also errors.
 T := frac(QQ[t]);
 assert(try (saveMRDI T; false) else true);
+///
+
+TEST ///
+-- polynomials saved by Oscar in the mrdi namespace, version 1.0.0
+f = loadMRDI "{\"_ns\":{\"Oscar\":[\"https://github.com/oscar-system/Oscar.jl\",\"1.9.0-DEV-1-d8bea8f4c62e09ba65640c3405d29fda7bc3b607\"],\"mrdi\":[\"https://www.mardi4nfdi.de/mrdi\",\"1.0.0\"]},\"_type\":{\"name\":\"Polynomial\",\"params\":\"1a07f7e2-78ca-41cd-b1ae-5770c5737992\"},\"data\":[[[2,1],\"1\"],[[0,1],\"-3//2\"],[[0,0],\"5\"]],\"_refs\":{\"1a07f7e2-78ca-41cd-b1ae-5770c5737992\":{\"_type\":{\"name\":\"PolynomialRing\",\"params\":{\"_type\":\"Rationals\"}},\"data\":{\"symbols\":[\"x\",\"y\"]}}}}";
+R = ring f;
+assert(coefficientRing R === QQ);
+assert(f == R_0^2*R_1 - 3/2*R_1 + 5);
+g = loadMRDI "{\"_ns\":{\"Oscar\":[\"https://github.com/oscar-system/Oscar.jl\",\"1.9.0-DEV-1-d8bea8f4c62e09ba65640c3405d29fda7bc3b607\"],\"mrdi\":[\"https://www.mardi4nfdi.de/mrdi\",\"1.0.0\"]},\"_type\":{\"name\":\"Polynomial\",\"params\":\"56e2f7ea-632a-4823-991d-0a9a88707867\"},\"data\":[[[2],3],[[0],1]],\"_refs\":{\"56e2f7ea-632a-4823-991d-0a9a88707867\":{\"_type\":{\"name\":\"PolynomialRing\",\"params\":\"d25fb803-c729-415e-b2af-37142008cbad\"},\"data\":{\"symbols\":[\"z\"]}},\"d25fb803-c729-415e-b2af-37142008cbad\":{\"_type\":{\"name\":\"FiniteField\",\"_instance\":\"FqField\"},\"data\":7}}}";
+S = ring g;
+assert(char S == 7);
+assert(g == 3*S_0^2 + 1);
 ///
